@@ -474,7 +474,7 @@ export function generateMarkdown(
   lines.push('---');
   lines.push('');
   lines.push(
-    '*Generated with [Hiring GitHub Readme](https://hiring-github-readme.vercel.app/)*',
+    '*Generated with [Hiring GitHub Profile](https://hiring-github-profile.vercel.app/)*',
   );
   lines.push('');
 

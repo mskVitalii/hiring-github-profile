@@ -18,7 +18,7 @@ if (isValidUsername) {
     const response = await fetch(`https://api.github.com/users/${rawUsername}`, {
       headers: {
         Accept: 'application/vnd.github+json',
-        'User-Agent': 'hiring-github-readme',
+        'User-Agent': 'hiring-github-profile',
       },
     });
 
@@ -38,7 +38,7 @@ const displayName = user?.name?.trim() || user?.login || rawUsername;
 const title = `${displayName} - GitHub Skills Scanner`;
 const baseDescription = user?.bio?.trim()
   ? `${displayName}: ${user.bio}`
-  : `Open ${displayName} in Hiring GitHub Readme to scan public repositories and generate a recruiter-ready skills summary.`;
+  : `Open ${displayName} in Hiring GitHub Profile to scan public repositories and generate a recruiter-ready skills summary.`;
 
 const descriptionSuffix =
   ' Analyze languages, frameworks, and tooling from public repositories to create a concise hiring profile for recruiters.';

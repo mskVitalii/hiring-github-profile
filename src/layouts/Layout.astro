@@ -7,7 +7,7 @@ interface Props {
 }
 
 const {
-  title = 'Hiring GitHub Readme — Developer Skills Scanner',
+  title = 'Hiring GitHub Profile — Developer Skills Scanner',
   description = 'Scan any GitHub profile to extract developer skills and technologies. Perfect for HR and recruiters.',
 } = Astro.props;
 
@@ -29,7 +29,7 @@ const ogImage = new URL(`${base}og-image.png`, Astro.site);
 const jsonLd = {
   '@context': 'https://schema.org',
   '@type': 'WebApplication',
-  name: 'Hiring GitHub Readme',
+  name: 'Hiring GitHub Profile',
   description,
   url: canonicalURL.toString(),
   applicationCategory: 'DeveloperApplication',
@@ -67,7 +67,7 @@ const jsonLd = {
     <meta property="og:image:type" content="image/png" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
-    <meta property="og:site_name" content="Hiring GitHub Readme" />
+    <meta property="og:site_name" content="Hiring GitHub Profile" />
     <meta property="og:locale" content="en_US" />
 
     <!-- Twitter -->

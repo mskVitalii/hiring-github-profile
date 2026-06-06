@@ -138,7 +138,7 @@ export default function MarkdownPreview({ result }: Props) {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const githubStarUrl = 'https://github.com/mskVitalii/hiring-github-readme';
+  const githubStarUrl = 'https://github.com/mskVitalii/hiring-github-profile';
   const profileReadmeRepoUrl = `https://github.com/${result.user.login}/${result.user.login}`;
   const profileReadmeEditUrl = `${profileReadmeRepoUrl}/edit/main/README.md`;
   const createProfileRepoUrl = `https://github.com/new?name=${encodeURIComponent(result.user.login)}&description=${encodeURIComponent('GitHub profile README')}`;

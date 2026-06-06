@@ -1,14 +1,14 @@
-# Hiring GitHub Readme
+# Hiring GitHub Profile
 
 Turn any GitHub profile into a recruiter-ready story in minutes.
 
-Hiring GitHub Readme analyzes public repositories, detects real technologies from code signals, and produces a polished README.md section you can paste into your profile. It helps developers present their strengths clearly and helps hiring teams evaluate faster.
+Hiring GitHub Profile analyzes public repositories, detects real technologies from code signals, and produces a polished README.md section you can paste into your profile. It helps developers present their strengths clearly and helps hiring teams evaluate faster.
 
-[![Repo Views](https://visitor-badge.laobi.icu/badge?page_id=mskvitalii.hiring-github-readme)](https://github.com/mskvitalii/hiring-github-readme)
+[![Repo Views](https://visitor-badge.laobi.icu/badge?page_id=mskvitalii.hiring-github-profile)](https://github.com/mskvitalii/hiring-github-profile)
 
 Author: [Vitalii Popov](https://www.linkedin.com/in/mskvitalii/)
 
-Live demo: https://hiring-github-readme.vercel.app/
+Live demo: https://hiring-github-profile.vercel.app/
 
 ## Why This Project
 

@@ -10,7 +10,7 @@ const enableSentry = process.env.ENABLE_SENTRY === 'true';
 
 // https://astro.build/config
 export default defineConfig({
-  site: 'https://hiring-github-readme.vercel.app',
+  site: 'https://hiring-github-profile.vercel.app',
   base: '/',
   output: 'server',
   adapter: vercel(),
@@ -22,7 +22,7 @@ export default defineConfig({
       ? [
           sentry({
             project: 'javascript-astro',
-            org: 'hiring-github-readme',
+            org: 'hiring-github-profile',
             authToken: process.env.SENTRY_AUTH_TOKEN,
           }),
         ]

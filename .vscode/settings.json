@@ -1,6 +1,6 @@
 {
   "chat.tools.terminal.autoApprove": {
-    "/^perl -pi -e 's\\|http://127\\\\\\.0\\\\\\.0\\\\\\.1:4321/hiring-github-readme/\\|http://127\\.0\\.0\\.1:4321/\\|g' lighthouse-report\\.json$/": {
+    "/^perl -pi -e 's\\|http://127\\\\\\.0\\\\\\.0\\\\\\.1:4321/hiring-github-profile/\\|http://127\\.0\\.0\\.1:4321/\\|g' lighthouse-report\\.json$/": {
       "approve": true,
       "matchCommandLine": true
     },

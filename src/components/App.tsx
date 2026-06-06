@@ -473,7 +473,7 @@ export default function App() {
         <p>
           Like this tool?{' '}
           <a
-            href='https://github.com/mskVitalii/hiring-github-readme'
+            href='https://github.com/mskVitalii/hiring-github-profile'
             target='_blank'
             rel='noopener noreferrer'
             className='text-gh-accent underline underline-offset-2 decoration-1 hover:decoration-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gh-accent/70 rounded-sm'
