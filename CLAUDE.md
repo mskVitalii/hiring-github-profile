@@ -23,14 +23,17 @@ Build and install on Vercel use **bun** (`vercel.json` specifies `bun run build`
 
 ### Data flow
 
-1. User enters a GitHub username → `App.tsx` calls `scanUser()` from `src/lib/github.ts` **or** `scanWithOAuthSession()` which calls `/api/scan`
-2. `scanUser()` fetches user profile + repos via GitHub REST API, then (if a token is provided) fetches per-repo language breakdowns and file trees in parallel using a custom `pLimit` (12 concurrent for languages, 8 for file trees, 6 for compose operations)
-3. Skills are detected in `detectSkillsFromRepos()` via four signals: primary language, language breakdown, topic/description keyword matching (`TECH_KEYWORDS` in `src/lib/keywords.ts`), and repo file tree patterns (infra/testing tools)
-4. Results are categorized via `SKILL_CATEGORIES` and returned as `ScanResult`
-5. `App.tsx` lazy-renders `UserCard`, `SkillsList`, and `MarkdownPreview`
-6. `generateMarkdown()` in `src/lib/markdown.ts` builds GitHub-flavored markdown with shields.io badges
+1. User enters a GitHub username (or clicks a profile in the gallery) → `App.tsx` calls `scanUser()` from `src/lib/github.ts` **or** `scanWithOAuthSession()` which calls `/api/scan`
+2. `scanUser()` fetches the user + non-fork repos, ranks them (`rankRepos`: active → stars → last push), then gathers signals per repo:
+   - **Basic (no token)**: primary language + topics, plus the root manifest for the primary language fetched from `raw.githubusercontent.com` (does not count against the REST rate limit)
+   - **Deep (token)**: language breakdown (top 80 repos), recursive file tree (top 40), nested manifests and docker compose files via raw
+   - A rate-limit hit mid-scan degrades to a partial result with `warnings` instead of failing
+3. `detectRepoTechs()` in `src/lib/detect.ts` turns signals into techs, strongest first: manifests → linguist languages (≥5% share) → file patterns → compose images → topics/description (whole-word only). Programming languages come **only** from linguist data. Ecosystem-bound frameworks are attributed to a language (`React → TypeScript`) and topic/description matches are dropped when that language is absent
+4. `aggregateSkills()` merges repos into `SkillCategory[]`; `ScanResult.repos` keeps per-repo techs with their sources
+5. `ProfileEditor` holds README settings (`localStorage` `hgp_settings_v2`) and per-profile selection — hidden skills, custom skills, excluded repos (`hgp_profile_v2_<login>`)
+6. `generateMarkdown(result, settings, selection)` in `src/lib/markdown.ts` builds the README: skill badges, projects (once each with stack, or under each skill), list/table layouts
 
-GitHub API responses are cached in `localStorage` for 1 hour.
+GitHub API responses and parsed manifests are cached in `localStorage` for 1 hour (`gh2_` prefix).
 
 ### Auth modes
 
@@ -50,34 +53,36 @@ Profiles are addressable via path (`/:username`) or query param (`?u=username`).
 
 | Path | Purpose |
 |---|---|
-| `src/components/App.tsx` | Root React island; orchestrates auth, scan, results |
-| `src/components/SearchBar.tsx` | Username input + token/OAuth controls |
-| `src/components/TokenInput.tsx` | PAT input UI |
-| `src/components/GitHubLoginButton.tsx` | OAuth login/logout button |
-| `src/components/ProgressBar.tsx` | Scan progress indicator |
-| `src/components/UserCard.tsx` | User profile card |
-| `src/components/SkillsList.tsx` | Detected skills grouped by category |
-| `src/components/MarkdownPreview.tsx` | Generated markdown + copy button |
-| `src/lib/github.ts` | GitHub REST API client, `scanUser()`, `detectSkillsFromRepos()` |
-| `src/lib/keywords.ts` | `TECH_KEYWORDS` and `SKILL_CATEGORIES` |
-| `src/lib/markdown.ts` | `generateMarkdown()` |
-| `src/lib/auth.ts` | OAuth cookie names, `TokenSource` type, cookie helpers |
-| `src/lib/token.ts` | PAT `saveToken` / `getToken` / `clearToken` (localStorage) |
-| `src/lib/types.ts` | Shared TypeScript types (`ScanResult`, `GitHubUser`, etc.) |
-| `src/lib/analytics.ts` | `trackAnalyticsEvent()` wrapper |
-| `src/lib/logger.ts` | Logging utilities |
-| `src/lib/github.test.ts` | Vitest unit tests for github.ts |
-| `src/pages/api/auth/login.ts` | OAuth login redirect |
-| `src/pages/api/auth/callback.ts` | OAuth code exchange, sets httpOnly cookie |
-| `src/pages/api/auth/logout.ts` | Clears OAuth cookie |
-| `src/pages/api/auth/session.ts` | Returns current OAuth session |
+| `src/components/App.tsx` | Root React island; orchestrates auth, scan, results, gallery |
+| `src/components/ProfileEditor.tsx` | Owns README settings/selection state; wires the editor components |
+| `src/components/SkillsList.tsx` | Detected skills; click toggles a skill out of the README |
+| `src/components/CustomizePanel.tsx` | README options + "add a skill" |
+| `src/components/ProjectPicker.tsx` | Include/exclude repos |
+| `src/components/MarkdownPreview.tsx` | Preview/raw markdown, copy, post-copy popup, safe GFM renderer |
+| `src/components/Gallery.tsx` | Famous developers grid (data in `src/lib/gallery.ts`) |
+| `src/components/SearchBar.tsx`, `TokenInput.tsx`, `GitHubLoginButton.tsx` | Username input, PAT and OAuth controls |
+| `src/lib/catalog/` | **Single source of truth for techs**: category, ecosystem languages, linguist names, topics, keywords, deps, file patterns, compose regex, implications, badge |
+| `src/lib/detect.ts` | Pure detection + aggregation + repo ranking |
+| `src/lib/manifests.ts` | Parsers for package.json, go.mod, pyproject/requirements, Cargo, Gemfile, composer, pubspec, pom/gradle, csproj, mix.exs |
+| `src/lib/github.ts` | GitHub REST/raw client and `scanUser()` orchestration |
+| `src/lib/markdown.ts` | `generateMarkdown()`, `visibleCategories()`, `skillLabel()` |
+| `src/lib/settings.ts` | `MarkdownSettings`, `ProfileSelection` and defaults |
+| `src/lib/types.ts` | Shared types (`ScanResult`, `RepoInfo`, `Skill`, …) |
+| `src/lib/*.test.ts` | Vitest tests for detection, manifests and markdown |
 | `src/pages/api/scan.ts` | Server-side scan proxy (requires OAuth cookie) |
+| `src/pages/api/auth/*` | OAuth login / callback / session / logout |
 
 ### Adding new technology detection
 
-- Add keywords to `TECH_KEYWORDS` in `src/lib/keywords.ts` for topic/description-based detection
-- Add the skill name to a category in `SKILL_CATEGORIES` to control where it appears
-- Add file-tree patterns inside `detectSkillsFromRepos()` in `src/lib/github.ts` for infra/tooling detection (e.g., config files, directories)
+Add one `TechDef` entry to the right file in `src/lib/catalog/`:
+
+- `langs` — ecosystem languages (omit for language-agnostic tools like Docker); required for anything that only exists in one ecosystem, otherwise topics like `gin` leak into unrelated repos
+- `deps` — package names per ecosystem (`'@nestjs/*'` prefix match) — the most reliable signal
+- `files` / `compose` — tree path regexes (paths are lower-cased) and compose image regex
+- `topics` — exact GitHub topic slugs; `keywords` — only unambiguous whole-word phrases for descriptions
+- `implies`, `badge` (`[color, simple-icons slug, logoColor]`)
+
+Add a test case in `src/lib/detect.test.ts` for anything with a false-positive risk.
 
 ## Environment variables
 

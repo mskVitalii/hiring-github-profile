@@ -1,55 +1,74 @@
-import { CATEGORY_EMOJIS } from '../lib/keywords';
-import type { SkillCategory } from '../lib/types';
+import { getCategory } from '../lib/catalog';
+import { skillLabel } from '../lib/markdown';
+import type { FrameworkLanguageMode } from '../lib/settings';
+import type { SkillCategory, TechSource } from '../lib/types';
 
 interface Props {
   categories: SkillCategory[];
+  hiddenSkills: string[];
+  /** Skills that pass hidden/min-repos/excluded-repos filters */
+  visibleSkills: Set<string>;
+  frameworkLanguage: FrameworkLanguageMode;
+  onToggle: (skillName: string) => void;
 }
 
-const SKILL_EMOJIS: Record<string, string> = {
-  PostgreSQL: '🐘',
-  MySQL: '🐬',
-  MongoDB: '🍃',
-  Redis: '🧠',
-  SQLite: '🧩',
-  Elasticsearch: '🔎',
-  DynamoDB: '⚡',
-  Firebase: '🔥',
-  Supabase: '⚡',
+const SOURCE_LABELS: Record<TechSource, string> = {
+  manifest: 'dependencies',
+  language: 'code languages',
+  files: 'config files',
+  compose: 'docker compose',
+  topic: 'repo topics',
+  description: 'repo description',
+  implied: 'related tech',
 };
 
-export default function SkillsList({ categories }: Props) {
-  const scrollToSkill = (skillName: string) => {
-    const anchor = skillName
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/(^-|-$)/g, '');
-    const el = document.getElementById(anchor);
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-  };
+export default function SkillsList({
+  categories,
+  hiddenSkills,
+  visibleSkills,
+  frameworkLanguage,
+  onToggle,
+}: Props) {
+  const hidden = new Set(hiddenSkills.map((s) => s.toLowerCase()));
 
   return (
     <div className='w-full max-w-3xl mx-auto space-y-4'>
+      <p className='text-xs text-gh-text-secondary'>
+        Click a skill to remove it from the README. Dimmed skills are filtered
+        out by your settings.
+      </p>
       {categories.map((category) => (
-        <div key={category.name}>
+        <div key={category.id}>
           <h3 className='text-xs font-semibold text-gh-text-secondary uppercase tracking-wide mb-2'>
-            {`${CATEGORY_EMOJIS[category.name] ?? '📦'} ${category.name}`}
+            {`${getCategory(category.id).emoji} ${category.name}`}
           </h3>
           <div className='flex flex-wrap gap-1.5'>
-            {category.skills.map((skill) => (
-              <button
-                key={skill.name}
-                onClick={() => scrollToSkill(skill.name)}
-                className='inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm border border-gh-border bg-gh-bg-secondary text-gh-text hover:border-gh-accent hover:text-gh-accent transition-colors cursor-pointer'
-              >
-                {SKILL_EMOJIS[skill.name] ? `${SKILL_EMOJIS[skill.name]} ` : ''}
-                {skill.name}
-                <span className='text-xs text-gh-text-secondary'>
-                  {skill.repos.length}
-                </span>
-              </button>
-            ))}
+            {category.skills.map((skill) => {
+              const isHidden = hidden.has(skill.name.toLowerCase());
+              const isFiltered = !isHidden && !visibleSkills.has(skill.name);
+              const via = skill.sources.map((s) => SOURCE_LABELS[s]).join(', ');
+              return (
+                <button
+                  key={skill.name}
+                  type='button'
+                  onClick={() => onToggle(skill.name)}
+                  aria-pressed={!isHidden}
+                  title={`${skill.repos.length} repo(s) · detected via ${via}\n${skill.repos.slice(0, 8).join(', ')}`}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm border transition-colors cursor-pointer ${
+                    isHidden
+                      ? 'border-dashed border-gh-border text-gh-text-secondary line-through opacity-60'
+                      : isFiltered
+                        ? 'border-gh-border bg-gh-bg-secondary text-gh-text-secondary opacity-60'
+                        : 'border-gh-border bg-gh-bg-secondary text-gh-text hover:border-gh-accent hover:text-gh-accent'
+                  }`}
+                >
+                  {skillLabel(skill, frameworkLanguage)}
+                  <span className='text-xs text-gh-text-secondary'>
+                    {skill.repos.length}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
       ))}

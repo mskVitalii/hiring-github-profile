@@ -1,19 +1,34 @@
-import { SKILL_CATEGORIES, TECH_KEYWORDS } from './keywords';
+import { aggregateSkills, buildRepoInfo, rankRepos } from './detect';
+import type { RepoSignals } from './detect';
+import {
+  parseManifest,
+  ROOT_MANIFESTS_BY_LANGUAGE,
+  selectManifestPaths,
+  type ParsedManifest,
+} from './manifests';
 import type {
   GitHubRepo,
   GitHubUser,
   RepoLanguages,
   ScanResult,
-  Skill,
-  SkillCategory,
 } from './types';
 
 const API_BASE = 'https://api.github.com';
+/** Public file contents; not counted against the REST API rate limit */
+const RAW_BASE = 'https://raw.githubusercontent.com';
 
 const CACHE_TTL = 60 * 60 * 1000; // 1 hour
-const TOKEN_LANG_CONCURRENCY = 12;
-const TOKEN_TREE_CONCURRENCY = 8;
-const TOKEN_COMPOSE_CONCURRENCY = 6;
+const CACHE_PREFIX = 'gh2_';
+
+/** Deep mode (token): repos that get a language breakdown */
+const DEEP_LANGUAGE_LIMIT = 80;
+/** Deep mode (token): repos that get a file tree + manifests */
+const DEEP_TREE_LIMIT = 40;
+/** Basic mode (no token): repos whose root manifest is probed via raw */
+const BASIC_MANIFEST_LIMIT = 25;
+
+const API_CONCURRENCY = 8;
+const RAW_CONCURRENCY = 10;
 
 interface CacheEntry<T> {
   data: T;
@@ -22,13 +37,12 @@ interface CacheEntry<T> {
 
 function getCached<T>(key: string): T | null {
   if (typeof localStorage === 'undefined') return null;
-
   try {
-    const raw = localStorage.getItem(key);
+    const raw = localStorage.getItem(CACHE_PREFIX + key);
     if (!raw) return null;
     const entry: CacheEntry<T> = JSON.parse(raw);
     if (Date.now() - entry.timestamp > CACHE_TTL) {
-      localStorage.removeItem(key);
+      localStorage.removeItem(CACHE_PREFIX + key);
       return null;
     }
     return entry.data;
@@ -39,973 +53,206 @@ function getCached<T>(key: string): T | null {
 
 function setCache<T>(key: string, data: T): void {
   if (typeof localStorage === 'undefined') return;
-
   try {
     const entry: CacheEntry<T> = { data, timestamp: Date.now() };
-    localStorage.setItem(key, JSON.stringify(entry));
+    localStorage.setItem(CACHE_PREFIX + key, JSON.stringify(entry));
   } catch {
     // localStorage full or unavailable — ignore
   }
 }
 
-/** Execute async tasks with max concurrency limit */
-async function pLimit<T>(
-  tasks: (() => Promise<T>)[],
-  limit: number = 5,
-): Promise<T[]> {
-  const results: T[] = new Array(tasks.length);
-  const executing: Promise<void>[] = [];
+async function cached<T>(key: string, load: () => Promise<T>): Promise<T> {
+  const hit = getCached<T>(key);
+  if (hit !== null) return hit;
+  const data = await load();
+  setCache(key, data);
+  return data;
+}
 
-  for (let i = 0; i < tasks.length; i++) {
-    const task = tasks[i];
-    const promise = Promise.resolve()
-      .then(() => task())
-      .then((result) => {
-        results[i] = result;
-      });
-
-    executing.push(promise);
-
-    if (executing.length >= limit) {
-      await Promise.race(executing);
-      executing.splice(
-        executing.findIndex((p) => p === promise),
-        1,
-      );
+/** Map items with at most `limit` promises in flight */
+async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
     }
-  }
-
-  await Promise.all(executing);
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, worker),
+  );
   return results;
 }
+
+export class RateLimitError extends Error {}
 
 async function ghFetch<T>(path: string, token?: string): Promise<T> {
   const headers: Record<string, string> = {
     Accept: 'application/vnd.github+json',
     'X-GitHub-Api-Version': '2022-11-28',
   };
-
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
+  if (token) headers['Authorization'] = `Bearer ${token}`;
 
   const res = await fetch(`${API_BASE}${path}`, { headers });
 
-  if (res.status === 403) {
-    const remaining = res.headers.get('x-ratelimit-remaining');
-    if (remaining === '0') {
-      const resetTime = Number(res.headers.get('x-ratelimit-reset')) * 1000;
-      const waitMin = Math.ceil((resetTime - Date.now()) / 60000);
-      throw new Error(
-        `GitHub API rate limit exceeded. Resets in ~${waitMin} minutes.`,
-      );
-    }
+  if (
+    (res.status === 403 || res.status === 429) &&
+    res.headers.get('x-ratelimit-remaining') === '0'
+  ) {
+    const resetTime = Number(res.headers.get('x-ratelimit-reset')) * 1000;
+    const waitMin = Math.max(1, Math.ceil((resetTime - Date.now()) / 60000));
+    throw new RateLimitError(
+      `GitHub API rate limit exceeded. Resets in ~${waitMin} minutes.`,
+    );
   }
-
   if (res.status === 404) {
     throw new Error('User not found. Check the username and try again.');
   }
-
   if (!res.ok) {
     throw new Error(`GitHub API error: ${res.status} ${res.statusText}`);
   }
-
   return res.json() as Promise<T>;
 }
 
-/** Parse username from input (handles full GitHub URLs) */
-export function parseUsername(input: string): string {
-  const trimmed = input.trim().replace(/\/+$/, '');
-  try {
-    const url = new URL(trimmed);
-    if (url.hostname === 'github.com') {
-      const parts = url.pathname.split('/').filter(Boolean);
-      if (parts.length >= 1) return parts[0];
-    }
-  } catch {
-    // Not a URL, treat as username
-  }
-  // Remove @ prefix if present
-  return trimmed.replace(/^@/, '');
-}
-
-export async function fetchUser(
-  username: string,
-  token?: string,
-): Promise<GitHubUser> {
-  const cacheKey = `gh_user_${username}`;
-  const cached = getCached<GitHubUser>(cacheKey);
-  if (cached) return cached;
-
-  const user = await ghFetch<GitHubUser>(
-    `/users/${encodeURIComponent(username)}`,
-    token,
-  );
-  setCache(cacheKey, user);
-  return user;
-}
-
-/** Fetch all non-fork repos (optionally include archived), paginated */
-export async function fetchRepos(
-  username: string,
-  includeArchived = true,
-  token?: string,
-): Promise<GitHubRepo[]> {
-  const cacheKey = `gh_repos_${username}_${includeArchived ? 'with_archived' : 'no_archived'}_${token ? 'with_token' : 'no_token'}`;
-  const cached = getCached<GitHubRepo[]>(cacheKey);
-  if (cached) return cached;
-
-  const allRepos: GitHubRepo[] = [];
-  const perPage = 100;
-  // With token: load all repos. Without token: load first page only (API limit ~100)
-  const maxPages = token ? Infinity : 1;
-
-  for (let page = 1; page <= maxPages; page++) {
-    const repos = await ghFetch<GitHubRepo[]>(
-      `/users/${encodeURIComponent(username)}/repos?per_page=${perPage}&page=${page}&sort=updated&type=owner`,
-      token,
-    );
-    allRepos.push(...repos);
-    if (repos.length < perPage) break;
-  }
-
-  const filtered = allRepos.filter(
-    (r) => !r.fork && (includeArchived || !r.archived),
-  );
-  setCache(cacheKey, filtered);
-  return filtered;
-}
-
-/**
- * Map GitHub API language names → our skill names.
- * null = skip entirely (too noisy to be a meaningful skill)
- */
-const LANG_NORMALIZER: Record<string, string | null> = {
-  'C#': 'C# / .NET',
-  'ASP.NET': 'C# / .NET',
-  'ASP.NET Core': 'C# / .NET',
-  Dockerfile: 'Docker',
-  HCL: 'Terraform',
-  'Jupyter Notebook': 'Jupyter',
-  SCSS: 'Sass',
-  CSS: 'CSS',
-  HTML: 'HTML',
-  Batchfile: null,
-  PowerShell: 'Shell',
-  Makefile: null,
-  YAML: null, // k8s/GitHub Actions detected via file tree, not raw YAML language
-  JSON: null,
-  Markdown: null,
-  'GitHub Actions Workflow': null, // dedupe — detected via keywords/file tree
-};
-
-function normalizeLang(lang: string): string | null {
-  if (lang in LANG_NORMALIZER) return LANG_NORMALIZER[lang];
-  return lang; // pass-through for JavaScript, Python, Go, etc.
-}
-
-const JS_TS_LANGUAGE_SKILLS = new Set(['JavaScript', 'TypeScript']);
-const DOTNET_LANGUAGE_SKILLS = new Set([
-  'C# / .NET',
-  'C#',
-  'F#',
-  'Visual Basic .NET',
-  'VB.NET',
-]);
-
-const FRAMEWORK_LANGUAGE_GUARDS: Partial<Record<string, string[]>> = {
-  // Frontend / Node ecosystem
-  React: ['JavaScript', 'TypeScript'],
-  Vue: ['JavaScript', 'TypeScript'],
-  Angular: ['JavaScript', 'TypeScript'],
-  Svelte: ['JavaScript', 'TypeScript'],
-  'Next.js': ['JavaScript', 'TypeScript'],
-  Nuxt: ['JavaScript', 'TypeScript'],
-  Astro: ['JavaScript', 'TypeScript'],
-  Gatsby: ['JavaScript', 'TypeScript'],
-  Redux: ['JavaScript', 'TypeScript'],
-  Zustand: ['JavaScript', 'TypeScript'],
-  Vite: ['JavaScript', 'TypeScript'],
-  Webpack: ['JavaScript', 'TypeScript'],
-  'Node.js': ['JavaScript', 'TypeScript'],
-  Express: ['JavaScript', 'TypeScript'],
-  Fastify: ['JavaScript', 'TypeScript'],
-  NestJS: ['JavaScript', 'TypeScript'],
-  'React Native': ['JavaScript', 'TypeScript'],
-
-  // Backend ecosystems
-  Django: ['Python'],
-  Flask: ['Python'],
-  FastAPI: ['Python'],
-  'Spring Boot': ['Java', 'Kotlin'],
-  'Ruby on Rails': ['Ruby'],
-  Laravel: ['PHP'],
-  Gin: ['Go'],
-  Fiber: ['Go'],
-  Actix: ['Rust'],
-  Flutter: ['Dart'],
-  SwiftUI: ['Swift'],
-};
-
-function isSkillCompatibleWithLanguages(
-  skillName: string,
-  repoLanguageSkills: Set<string>,
-): boolean {
-  if (skillName === 'C# / .NET') {
-    for (const lang of DOTNET_LANGUAGE_SKILLS) {
-      if (repoLanguageSkills.has(lang)) return true;
-    }
-    return false;
-  }
-
-  const requiredLanguages = FRAMEWORK_LANGUAGE_GUARDS[skillName];
-  if (!requiredLanguages) return true;
-  return requiredLanguages.some((lang) => repoLanguageSkills.has(lang));
-}
-
-/** Fetch language breakdown for a repo */
-async function fetchRepoLanguages(
-  owner: string,
-  repo: string,
-  token?: string,
-): Promise<RepoLanguages> {
-  const cacheKey = `gh_langs_${owner}_${repo}`;
-  const cached = getCached<RepoLanguages>(cacheKey);
-  if (cached) return cached;
-
-  const langs = await ghFetch<RepoLanguages>(
-    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/languages`,
-    token,
-  );
-  setCache(cacheKey, langs);
-  return langs;
-}
-
-/** Fetch repository file tree paths (used for infra detection, including nested folders) */
-async function fetchRepoTreePaths(
-  owner: string,
-  repo: string,
-  token?: string,
-): Promise<string[]> {
-  const cacheKey = `gh_tree_${owner}_${repo}`;
-  const cached = getCached<string[]>(cacheKey);
-  if (cached) return cached;
-
-  try {
-    const tree = await ghFetch<{
-      tree?: Array<{ path?: string; type?: string }>;
-      truncated?: boolean;
-    }>(
-      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees/HEAD?recursive=1`,
-      token,
-    );
-    const paths =
-      tree.tree
-        ?.map((entry) => entry.path?.toLowerCase())
-        .filter((v): v is string => Boolean(v)) ?? [];
-
-    if (paths.length > 0) {
-      setCache(cacheKey, paths);
-      return paths;
-    }
-
-    // Fallback for repos where recursive tree isn't available.
-    const contents = await ghFetch<Array<{ name: string; type: string }>>(
-      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/`,
-      token,
-    );
-    const names = contents.map((f) => f.name.toLowerCase());
-    setCache(cacheKey, names);
-    return names;
-  } catch {
-    return [];
-  }
-}
-
-type GitHubFileContent = {
-  content?: string;
-  encoding?: string;
-};
-
-function decodeBase64Utf8(value: string): string {
-  const clean = value.replace(/\n/g, '');
-
-  if (typeof atob === 'function') {
-    return atob(clean);
-  }
-
-  if (typeof Buffer !== 'undefined') {
-    return Buffer.from(clean, 'base64').toString('utf8');
-  }
-
-  return '';
-}
-
-function isComposeFilePath(path: string): boolean {
-  return /(^|\/)(docker-)?compose([.-][a-z0-9_-]+)?\.ya?ml$/i.test(path);
-}
-
-function getComposeFileCandidates(paths: string[]): string[] {
-  return paths
-    .filter((p) => isComposeFilePath(p))
-    .sort((a, b) => a.split('/').length - b.split('/').length)
-    .slice(0, 3);
-}
-
-async function fetchRepoFileContent(
+async function rawFetch(
   owner: string,
   repo: string,
   path: string,
-  token?: string,
 ): Promise<string | null> {
-  const cacheKey = `gh_file_${owner}_${repo}_${path}`;
-  const cached = getCached<string>(cacheKey);
-  if (cached) return cached;
-
+  const encoded = path.split('/').map(encodeURIComponent).join('/');
   try {
-    const encodedPath = path
-      .split('/')
-      .map((part) => encodeURIComponent(part))
-      .join('/');
-
-    const file = await ghFetch<GitHubFileContent>(
-      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodedPath}`,
-      token,
+    const res = await fetch(
+      `${RAW_BASE}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/HEAD/${encoded}`,
     );
-
-    if (file.encoding !== 'base64' || !file.content) return null;
-
-    const decoded = decodeBase64Utf8(file.content);
-    if (!decoded) return null;
-
-    setCache(cacheKey, decoded);
-    return decoded;
+    return res.ok ? await res.text() : null;
   } catch {
     return null;
   }
 }
 
-function detectSkillsFromComposeContent(content: string): string[] {
-  const text = content.toLowerCase();
-  const skills = new Set<string>();
-
-  // compose files are a strong Docker signal
-  skills.add('Docker');
-
-  if (/\b(postgres|postgresql|timescaledb)\b/.test(text)) {
-    skills.add('PostgreSQL');
+/** Parse username from input (handles full GitHub URLs and @handles) */
+export function parseUsername(input: string): string {
+  const raw = input.trim();
+  if (!raw) return '';
+  try {
+    const url = new URL(raw);
+    if (url.hostname.toLowerCase().replace(/^www\./, '') === 'github.com') {
+      return url.pathname.split('/').filter(Boolean)[0] ?? '';
+    }
+  } catch {
+    // Not a URL — treat as username
   }
-  if (/\b(mysql|mariadb|percona)\b/.test(text)) {
-    skills.add('MySQL');
-  }
-  if (/\b(mongo|mongodb)\b/.test(text)) {
-    skills.add('MongoDB');
-  }
-  if (/\b(redis|valkey)\b/.test(text)) {
-    skills.add('Redis');
-  }
-  if (/\b(elasticsearch|opensearch)\b/.test(text)) {
-    skills.add('Elasticsearch');
-  }
-  if (/\brabbitmq\b/.test(text)) {
-    skills.add('RabbitMQ');
-  }
-  if (/\b(kafka|redpanda)\b/.test(text)) {
-    skills.add('Kafka');
-  }
-  if (/\b(prometheus)\b/.test(text)) {
-    skills.add('Prometheus');
-  }
-  if (/\b(grafana)\b/.test(text)) {
-    skills.add('Grafana');
-  }
-  if (/\bnginx\b/.test(text)) {
-    skills.add('Nginx');
-  }
-
-  return [...skills];
+  return raw.replace(/^@/, '').split('/')[0] ?? '';
 }
 
-async function fetchComposeSkillsForRepo(
+export function fetchUser(
+  username: string,
+  token?: string,
+): Promise<GitHubUser> {
+  return cached(`user_${username}`, () =>
+    ghFetch<GitHubUser>(`/users/${encodeURIComponent(username)}`, token),
+  );
+}
+
+/** Non-fork repos (optionally without archived). Without a token: first 100. */
+export async function fetchRepos(
+  username: string,
+  includeArchived = true,
+  token?: string,
+): Promise<GitHubRepo[]> {
+  const all = await cached(
+    `repos_${username}_${token ? 'all' : 'first'}`,
+    async () => {
+      const repos: GitHubRepo[] = [];
+      const perPage = 100;
+      const maxPages = token ? 20 : 1;
+      for (let page = 1; page <= maxPages; page++) {
+        const batch = await ghFetch<GitHubRepo[]>(
+          `/users/${encodeURIComponent(username)}/repos?per_page=${perPage}&page=${page}&sort=pushed&type=owner`,
+          token,
+        );
+        repos.push(...batch);
+        if (batch.length < perPage) break;
+      }
+      return repos.filter((r) => !r.fork);
+    },
+  );
+  return all.filter((r) => includeArchived || !r.archived);
+}
+
+function fetchRepoLanguages(
   owner: string,
   repo: string,
-  paths: string[],
   token?: string,
-): Promise<string[]> {
-  const composeFiles = getComposeFileCandidates(paths);
-  if (composeFiles.length === 0) return [];
-
-  const skills = new Set<string>();
-  for (const composePath of composeFiles) {
-    const content = await fetchRepoFileContent(owner, repo, composePath, token);
-    if (!content) continue;
-
-    for (const skill of detectSkillsFromComposeContent(content)) {
-      skills.add(skill);
-    }
-  }
-
-  return [...skills];
-}
-
-/** Detect skills from a set of repos */
-function detectSkillsFromRepos(
-  repos: GitHubRepo[],
-  languageMaps: Map<string, RepoLanguages>,
-  rootFilesMap: Map<string, string[]>,
-  composeSkillsMap: Map<string, string[]> = new Map(),
-): Map<
-  string,
-  {
-    repos: Map<
-      string,
-      {
-        url: string;
-        description: string | null;
-        homepage: string | null;
-        stars: number;
-        updatedAt: string;
-        archived: boolean;
-        topics: string[];
-      }
-    >;
-  }
-> {
-  const skillMap = new Map<
-    string,
-    {
-      repos: Map<
-        string,
-        {
-          url: string;
-          description: string | null;
-          homepage: string | null;
-          stars: number;
-          updatedAt: string;
-          topics: string[];
-          archived: boolean;
-        }
-      >;
-    }
-  >();
-
-  const repoDescriptionByName = new Map(
-    repos.map((repo) => [repo.name, repo.description ?? null]),
-  );
-
-  const addSkill = (
-    skillName: string,
-    repoName: string,
-    repoUrl: string,
-    homepage: string | null,
-    topics: string[],
-    stars: number,
-    updatedAt: string,
-    archived: boolean,
-  ) => {
-    if (!skillMap.has(skillName)) {
-      skillMap.set(skillName, { repos: new Map() });
-    }
-    const entry = skillMap.get(skillName)!;
-    if (!entry.repos.has(repoName)) {
-      entry.repos.set(repoName, {
-        url: repoUrl,
-        description: repoDescriptionByName.get(repoName) ?? null,
-        homepage,
-        topics,
-        stars,
-        updatedAt,
-        archived,
-      });
-    }
-  };
-
-  for (const repo of repos) {
-    const repoPaths = rootFilesMap.get(repo.name) ?? [];
-    const hasPackageJson = repoPaths.some(
-      (p) => p === 'package.json' || p.endsWith('/package.json'),
-    );
-    const repoLanguageSkills = new Set<string>();
-
-    const addLanguageSkill = (skillName: string) => {
-      repoLanguageSkills.add(skillName);
-      addSkill(
-        skillName,
-        repo.name,
-        repo.html_url,
-        repo.homepage,
-        repo.topics,
-        repo.stargazers_count,
-        repo.updated_at,
-        repo.archived,
-      );
-    };
-
-    // 1. Detect from primary language
-    if (repo.language) {
-      const normalized = normalizeLang(repo.language);
-      if (normalized) {
-        addLanguageSkill(normalized);
-      }
-    }
-
-    // 2. Detect from language breakdown (normalized to our skill names)
-    const langs = languageMaps.get(repo.name);
-    if (langs) {
-      for (const lang of Object.keys(langs)) {
-        const normalized = normalizeLang(lang);
-        if (normalized) {
-          addLanguageSkill(normalized);
-        }
-      }
-    }
-
-    // Fullstack hint: package.json means JS/TS ecosystem is likely present.
-    // We only unlock framework guards here; do not add JS/TS as language skills.
-    if (hasPackageJson) {
-      for (const lang of JS_TS_LANGUAGE_SKILLS) {
-        repoLanguageSkills.add(lang);
-      }
-    }
-
-    // 3. Detect from topics using keyword map
-    const searchText = [...repo.topics, repo.description ?? '', repo.name]
-      .join(' ')
-      .toLowerCase();
-
-    for (const [skillName, keywords] of Object.entries(TECH_KEYWORDS)) {
-      if (
-        keywords.some((kw) => searchText.includes(kw)) &&
-        isSkillCompatibleWithLanguages(skillName, repoLanguageSkills)
-      ) {
-        addSkill(
-          skillName,
-          repo.name,
-          repo.html_url,
-          repo.homepage,
-          repo.topics,
-          repo.stargazers_count,
-          repo.updated_at,
-          repo.archived,
-        );
-      }
-    }
-
-    // 4. Detect from repository file tree (infra/testing candidates)
-    // This catches infra/testing patterns even when topics/descriptions are missing.
-    // even when the developer hasn't set explicit topics.
-    if (repoPaths.length > 0) {
-      // GitHub Actions: .github directory is a reliable signal
-      if (repoPaths.some((p) => p === '.github' || p.startsWith('.github/'))) {
-        addSkill(
-          'GitHub Actions',
-          repo.name,
-          repo.html_url,
-          repo.homepage,
-          repo.topics,
-          repo.stargazers_count,
-          repo.updated_at,
-          repo.archived,
-        );
-      }
-      // Kubernetes: canonical folder names anywhere in the repository tree
-      const k8sIndicators = [
-        'k8s',
-        'kubernetes',
-        'manifests',
-        'kustomize',
-        'gitops',
-        'flux',
-        'argocd',
-      ];
-      if (
-        repoPaths.some((p) =>
-          k8sIndicators.some(
-            (d) => p.split('/').includes(d) || p.startsWith(`${d}/`),
-          ),
-        )
-      ) {
-        addSkill(
-          'Kubernetes',
-          repo.name,
-          repo.html_url,
-          repo.homepage,
-          repo.topics,
-          repo.stargazers_count,
-          repo.updated_at,
-          repo.archived,
-        );
-      }
-      // Helm: chart metadata or chart folders in repo tree
-      if (
-        repoPaths.some(
-          (p) =>
-            p === 'chart.yaml' ||
-            p.endsWith('/chart.yaml') ||
-            p.split('/').includes('charts') ||
-            p.endsWith('/helmfile.yaml') ||
-            p.endsWith('/helmfile.yml') ||
-            p === 'helmfile.yaml' ||
-            p === 'helmfile.yml',
-        )
-      ) {
-        addSkill(
-          'Helm',
-          repo.name,
-          repo.html_url,
-          repo.homepage,
-          repo.topics,
-          repo.stargazers_count,
-          repo.updated_at,
-          repo.archived,
-        );
-      }
-      // Terraform: .tf/.tfvars files or terraform/ directory anywhere
-      if (
-        repoPaths.some(
-          (p) =>
-            p.endsWith('.tf') ||
-            p.endsWith('.tfvars') ||
-            p.split('/').includes('terraform'),
-        )
-      ) {
-        addSkill(
-          'Terraform',
-          repo.name,
-          repo.html_url,
-          repo.homepage,
-          repo.topics,
-          repo.stargazers_count,
-          repo.updated_at,
-          repo.archived,
-        );
-      }
-      // Ansible
-      if (
-        repoPaths.some(
-          (p) =>
-            p.split('/').includes('ansible') ||
-            p === 'galaxy.yml' ||
-            p.endsWith('/galaxy.yml') ||
-            p.includes('playbook'),
-        )
-      ) {
-        addSkill(
-          'Ansible',
-          repo.name,
-          repo.html_url,
-          repo.homepage,
-          repo.topics,
-          repo.stargazers_count,
-          repo.updated_at,
-          repo.archived,
-        );
-      }
-
-      // Storybook
-      if (
-        repoPaths.some(
-          (p) =>
-            p === '.storybook' ||
-            p.startsWith('.storybook/') ||
-            p.includes('.stories.'),
-        )
-      ) {
-        addSkill(
-          'Storybook',
-          repo.name,
-          repo.html_url,
-          repo.homepage,
-          repo.topics,
-          repo.stargazers_count,
-          repo.updated_at,
-          repo.archived,
-        );
-      }
-
-      // Testing tool detection from file conventions/configs
-      const hasJest = repoPaths.some(
-        (p) =>
-          p === 'jest.config.js' ||
-          p === 'jest.config.ts' ||
-          p.endsWith('/jest.config.js') ||
-          p.endsWith('/jest.config.ts') ||
-          p.includes('/__tests__/') ||
-          /\.(test|spec)\.[cm]?[jt]sx?$/.test(p),
-      );
-      if (hasJest) {
-        addSkill(
-          'Jest',
-          repo.name,
-          repo.html_url,
-          repo.homepage,
-          repo.topics,
-          repo.stargazers_count,
-          repo.updated_at,
-          repo.archived,
-        );
-      }
-
-      const hasVitest = repoPaths.some(
-        (p) =>
-          p === 'vitest.config.ts' ||
-          p === 'vitest.config.js' ||
-          p.endsWith('/vitest.config.ts') ||
-          p.endsWith('/vitest.config.js'),
-      );
-      if (hasVitest) {
-        addSkill(
-          'Vitest',
-          repo.name,
-          repo.html_url,
-          repo.homepage,
-          repo.topics,
-          repo.stargazers_count,
-          repo.updated_at,
-          repo.archived,
-        );
-      }
-
-      const hasCypress = repoPaths.some(
-        (p) =>
-          p === 'cypress' ||
-          p.startsWith('cypress/') ||
-          p === 'cypress.config.ts' ||
-          p === 'cypress.config.js' ||
-          p.endsWith('/cypress.config.ts') ||
-          p.endsWith('/cypress.config.js'),
-      );
-      if (hasCypress) {
-        addSkill(
-          'Cypress',
-          repo.name,
-          repo.html_url,
-          repo.homepage,
-          repo.topics,
-          repo.stargazers_count,
-          repo.updated_at,
-          repo.archived,
-        );
-      }
-
-      const hasPlaywright = repoPaths.some(
-        (p) =>
-          p === 'playwright.config.ts' ||
-          p === 'playwright.config.js' ||
-          p.endsWith('/playwright.config.ts') ||
-          p.endsWith('/playwright.config.js') ||
-          p.includes('/playwright/'),
-      );
-      if (hasPlaywright) {
-        addSkill(
-          'Playwright',
-          repo.name,
-          repo.html_url,
-          repo.homepage,
-          repo.topics,
-          repo.stargazers_count,
-          repo.updated_at,
-          repo.archived,
-        );
-      }
-
-      const hasPytest = repoPaths.some(
-        (p) =>
-          p === 'pytest.ini' ||
-          p.endsWith('/pytest.ini') ||
-          p === 'conftest.py' ||
-          p.endsWith('/conftest.py') ||
-          /(^|\/)test_.*\.py$/.test(p) ||
-          /_test\.py$/.test(p),
-      );
-      if (hasPytest) {
-        addSkill(
-          'Pytest',
-          repo.name,
-          repo.html_url,
-          repo.homepage,
-          repo.topics,
-          repo.stargazers_count,
-          repo.updated_at,
-          repo.archived,
-        );
-      }
-
-      const hasMocha = repoPaths.some(
-        (p) =>
-          p === '.mocharc.json' ||
-          p === '.mocharc.js' ||
-          p === 'mocha.opts' ||
-          p.endsWith('/.mocharc.json') ||
-          p.endsWith('/.mocharc.js') ||
-          p.endsWith('/mocha.opts'),
-      );
-      if (hasMocha) {
-        addSkill(
-          'Mocha',
-          repo.name,
-          repo.html_url,
-          repo.homepage,
-          repo.topics,
-          repo.stargazers_count,
-          repo.updated_at,
-          repo.archived,
-        );
-      }
-    }
-
-    // 5. Detect from compose.yaml/docker-compose.yml contents
-    const composeSkills = composeSkillsMap.get(repo.name) ?? [];
-    for (const skillName of composeSkills) {
-      addSkill(
-        skillName,
-        repo.name,
-        repo.html_url,
-        repo.homepage,
-        repo.topics,
-        repo.stargazers_count,
-        repo.updated_at,
-        repo.archived,
-      );
-    }
-  }
-
-  // Post-processing: Merge JavaScript & TypeScript
-  // For repos with both JS and TS, classify as JS if JS >= 20% of combined JS+TS
-  // This consolidates language detection and avoids duplicate tech labels
-  // Only apply when we have actual language breakdown data
-  const jsRepos = skillMap.get('JavaScript')?.repos ?? new Map();
-  const tsRepos = skillMap.get('TypeScript')?.repos ?? new Map();
-  const commonRepos = new Set(
-    [...jsRepos.keys()].filter(
-      (name) => tsRepos.has(name) && languageMaps.has(name),
+): Promise<RepoLanguages> {
+  return cached(`langs_${owner}_${repo}`, () =>
+    ghFetch<RepoLanguages>(
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/languages`,
+      token,
     ),
   );
-
-  if (commonRepos.size > 0) {
-    for (const repoName of commonRepos) {
-      const langs = languageMaps.get(repoName);
-      if (!langs) continue; // Skip if no language data
-
-      let jsBytes = 0;
-      let tsBytes = 0;
-
-      // Find JS and TS bytes (case-insensitive keys)
-      for (const [lang, bytes] of Object.entries(langs)) {
-        const normalized = lang.toLowerCase();
-        if (normalized === 'javascript') jsBytes += bytes;
-        if (normalized === 'typescript') tsBytes += bytes;
-      }
-
-      const totalBytes = jsBytes + tsBytes;
-      if (totalBytes === 0) continue; // Skip if no JS/TS data
-
-      // Always keep TypeScript, remove JavaScript for mixed repos
-      jsRepos.delete(repoName);
-    }
-
-    // Clean up empty entries
-    if (jsRepos.size === 0) skillMap.delete('JavaScript');
-  }
-
-  return skillMap;
 }
 
-export const __testables = {
-  detectSkillsFromRepos,
-  isSkillCompatibleWithLanguages,
-  detectSkillsFromComposeContent,
-};
-
-/** Organize detected skills into categories */
-function categorizeSkills(
-  skillMap: Map<
-    string,
-    {
-      repos: Map<
-        string,
-        {
-          url: string;
-          description: string | null;
-          homepage: string | null;
-          topics: string[];
-          stars: number;
-          updatedAt: string;
-          archived: boolean;
-        }
-      >;
-    }
-  >,
-): SkillCategory[] {
-  const categories: SkillCategory[] = [];
-
-  for (const [categoryName, skillNames] of Object.entries(SKILL_CATEGORIES)) {
-    const skills: Skill[] = [];
-
-    for (const skillName of skillNames) {
-      const data = skillMap.get(skillName);
-      if (data && data.repos.size > 0) {
-        const repoEntries = [...data.repos.entries()];
-        skills.push({
-          name: skillName,
-          repos: repoEntries.map(([name]) => name),
-          repoUrls: repoEntries.map(([, info]) => info.url),
-          repoDescriptions: repoEntries.map(([, info]) => info.description),
-          repoHomepages: repoEntries.map(([, info]) => info.homepage),
-          repoTopics: repoEntries.map(([, info]) => info.topics),
-          repoStars: repoEntries.map(([, info]) => info.stars),
-          repoUpdatedAt: repoEntries.map(([, info]) => info.updatedAt),
-          repoArchived: repoEntries.map(([, info]) => info.archived),
-        });
-      }
-    }
-
-    if (skills.length > 0) {
-      // Sort by number of repos (descending)
-      skills.sort((a, b) => b.repos.length - a.repos.length);
-      categories.push({ name: categoryName, skills });
-    }
-  }
-
-  // Add uncategorized skills
-  const allCategorized = new Set(Object.values(SKILL_CATEGORIES).flat());
-  const uncategorized: Skill[] = [];
-
-  for (const [skillName, data] of skillMap) {
-    if (!allCategorized.has(skillName) && data.repos.size > 0) {
-      const repoEntries = [...data.repos.entries()];
-      uncategorized.push({
-        name: skillName,
-        repos: repoEntries.map(([name]) => name),
-        repoUrls: repoEntries.map(([, info]) => info.url),
-        repoDescriptions: repoEntries.map(([, info]) => info.description),
-        repoHomepages: repoEntries.map(([, info]) => info.homepage),
-        repoTopics: repoEntries.map(([, info]) => info.topics),
-        repoStars: repoEntries.map(([, info]) => info.stars),
-        repoUpdatedAt: repoEntries.map(([, info]) => info.updatedAt),
-        repoArchived: repoEntries.map(([, info]) => info.archived),
-      });
-    }
-  }
-
-  if (uncategorized.length > 0) {
-    uncategorized.sort((a, b) => b.repos.length - a.repos.length);
-    categories.push({ name: 'Other', skills: uncategorized });
-  }
-
-  return categories;
+function fetchRepoTreePaths(
+  owner: string,
+  repo: string,
+  token?: string,
+): Promise<string[]> {
+  return cached(`tree_${owner}_${repo}`, async () => {
+    const tree = await ghFetch<{ tree?: Array<{ path?: string }> }>(
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees/HEAD?recursive=1`,
+      token,
+    ).catch((err) => {
+      if (err instanceof RateLimitError) throw err;
+      return { tree: [] }; // empty repo
+    });
+    return (tree.tree ?? [])
+      .map((e) => e.path ?? '')
+      .filter((p) => p && !p.includes('node_modules/'));
+  });
 }
+
+function fetchManifest(
+  owner: string,
+  repo: string,
+  path: string,
+): Promise<ParsedManifest | null> {
+  return cached(`manifest_${owner}_${repo}_${path}`, async () => {
+    const content = await rawFetch(owner, repo, path);
+    return content ? parseManifest(path, content) : null;
+  });
+}
+
+function fetchCompose(
+  owner: string,
+  repo: string,
+  path: string,
+): Promise<string | null> {
+  return cached(`compose_${owner}_${repo}_${path}`, async () => {
+    const content = await rawFetch(owner, repo, path);
+    return content ? content.slice(0, 20000) : null;
+  });
+}
+
+const COMPOSE_FILE = /(^|\/)(docker-)?compose([.-][a-z0-9_-]+)?\.ya?ml$/i;
 
 export type ScanProgress = {
-  phase: 'user' | 'repos' | 'languages' | 'analyzing' | 'done';
+  phase: 'user' | 'repos' | 'languages' | 'trees' | 'manifests' | 'analyzing';
   current?: number;
   total?: number;
 };
 
 /**
- * Scan user's GitHub profile
- * - Without token: Fast mode (~1-3 requests) - analyzes primary language only
- * - With token: Detailed mode (~100+ requests) - analyzes all languages & file structure
+ * Scan a user's public repos.
+ * - Basic (no token): primary language + topics, plus root manifests fetched
+ *   from raw.githubusercontent.com (2 API requests total).
+ * - Deep (token): language breakdown, file trees, nested manifests and
+ *   compose files for the top repos.
  */
 export async function scanUser(
   username: string,
@@ -1014,162 +261,111 @@ export async function scanUser(
   options?: { includeArchived?: boolean },
 ): Promise<ScanResult> {
   const includeArchived = options?.includeArchived ?? true;
+  const warnings: string[] = [];
 
   onProgress?.({ phase: 'user' });
   const user = await fetchUser(username, token);
+  const owner = user.login;
 
   onProgress?.({ phase: 'repos' });
-  const repos = await fetchRepos(username, includeArchived, token);
-
-  // If no token: fast mode (only primary language + topics)
-  if (!token) {
-    onProgress?.({ phase: 'analyzing' });
-    const skillMap = detectSkillsFromRepos(repos, new Map(), new Map());
-    const categories = categorizeSkills(skillMap);
-
-    onProgress?.({ phase: 'done' });
-    return {
-      user,
-      categories,
-      totalRepos: repos.length,
-      scannedRepos: repos.length,
-    };
-  }
-
-  // With token: detailed mode (languages + file tree for better detection)
-  const sortedRepos = [...repos].sort(
-    (a, b) => b.stargazers_count - a.stargazers_count || b.size - b.size,
+  const repos = rankRepos(await fetchRepos(owner, includeArchived, token));
+  const signals = new Map<string, RepoSignals>(
+    repos.map((r) => [r.name, {}]),
   );
-  const languageMaps = new Map<string, RepoLanguages>();
+  const deepRepos = new Set<string>();
+  const treePaths = new Map<string, string[]>();
 
-  // Fetch languages in parallel with a bounded limit to avoid GitHub secondary throttling.
-  onProgress?.({
-    phase: 'languages',
-    current: 0,
-    total: sortedRepos.length,
-  });
-
-  const languageTasks = sortedRepos.map((repo, idx) => async () => {
-    onProgress?.({
-      phase: 'languages',
-      current: idx + 1,
-      total: sortedRepos.length,
-    });
-
-    if (repo.language) {
-      return { repo: repo.name, langs: {} as RepoLanguages };
+  // A rate-limit hit mid-scan degrades the result instead of failing it.
+  let rateLimited = false;
+  const guarded = async <T>(load: () => Promise<T>, fallback: T) => {
+    if (rateLimited) return fallback;
+    try {
+      return await load();
+    } catch (err) {
+      if (err instanceof RateLimitError) {
+        rateLimited = true;
+        warnings.push(
+          `${err.message} Showing a partial scan — results may be incomplete.`,
+        );
+      }
+      return fallback;
     }
-    const langs = await fetchRepoLanguages(username, repo.name, token);
-    return { repo: repo.name, langs };
-  });
+  };
 
-  const languageResults = await pLimit(languageTasks, TOKEN_LANG_CONCURRENCY);
-  languageResults.forEach(({ repo, langs }) => {
-    languageMaps.set(repo, langs);
-  });
-
-  // Fetch file tree for infra/testing detection
-  const infraLanguages = new Set([
-    null,
-    undefined,
-    'YAML',
-    'HCL',
-    'Shell',
-    'Dockerfile',
-  ]);
-  const infraRepos = sortedRepos.filter((r) =>
-    infraLanguages.has(r.language ?? null),
-  );
-
-  const fullstackCandidateLanguages = new Set([
-    'Go',
-    'Python',
-    'Java',
-    'C#',
-    'Rust',
-    'Ruby',
-    'PHP',
-    'Kotlin',
-    'Scala',
-  ]);
-  const fullstackHint = /fullstack|full-stack|frontend|ui|web/i;
-  const fullstackRepos = sortedRepos
-    .filter((r) => {
-      const lang = r.language ?? '';
-      if (fullstackCandidateLanguages.has(lang)) return true;
-      const text = `${r.name} ${r.description ?? ''} ${r.topics.join(' ')}`;
-      return fullstackHint.test(text);
-    })
-    .slice(0, 40);
-
-  const testingLanguages = new Set(['JavaScript', 'TypeScript', 'Python']);
-  const testingHint =
-    /test|testing|storybook|cypress|playwright|jest|vitest|pytest|mocha/i;
-  const testingRepos = sortedRepos
-    .filter((r) => {
-      if (testingLanguages.has(r.language ?? '')) return true;
-      const text = `${r.name} ${r.description ?? ''} ${r.topics.join(' ')}`;
-      return testingHint.test(text);
-    })
-    .slice(0, 8);
-
-  const treeRepoMap = new Map<string, GitHubRepo>();
-  for (const repo of [...infraRepos, ...testingRepos, ...fullstackRepos]) {
-    treeRepoMap.set(repo.name, repo);
-  }
-  const treeRepos = [...treeRepoMap.values()];
-
-  const rootFilesMap = new Map<string, string[]>();
-
-  // Fetch tree paths in parallel with a bounded limit to avoid request bursts.
-  const treeTasks = treeRepos.map((repo, idx) => async () => {
-    onProgress?.({
-      phase: 'languages',
-      current: sortedRepos.length + idx + 1,
-      total: sortedRepos.length + treeRepos.length,
+  if (token) {
+    const langRepos = repos.slice(0, DEEP_LANGUAGE_LIMIT);
+    let done = 0;
+    await mapLimit(langRepos, API_CONCURRENCY, async (repo) => {
+      const langs = await guarded(
+        () => fetchRepoLanguages(owner, repo.name, token),
+        null,
+      );
+      if (langs) signals.get(repo.name)!.languages = langs;
+      onProgress?.({ phase: 'languages', current: ++done, total: langRepos.length });
     });
-    const files = await fetchRepoTreePaths(username, repo.name, token);
-    return { repo: repo.name, files };
-  });
 
-  const treeResults = await pLimit(treeTasks, TOKEN_TREE_CONCURRENCY);
-  treeResults.forEach(({ repo, files }) => {
-    rootFilesMap.set(repo, files);
-  });
+    const treeRepos = repos.slice(0, DEEP_TREE_LIMIT);
+    done = 0;
+    await mapLimit(treeRepos, API_CONCURRENCY, async (repo) => {
+      const paths = await guarded(
+        () => fetchRepoTreePaths(owner, repo.name, token),
+        null,
+      );
+      if (paths) {
+        treePaths.set(repo.name, paths);
+        signals.get(repo.name)!.paths = paths.map((p) => p.toLowerCase());
+        deepRepos.add(repo.name);
+      }
+      onProgress?.({ phase: 'trees', current: ++done, total: treeRepos.length });
+    });
 
-  // Fetch and analyze compose files for infra/database hints.
-  const composeSkillsMap = new Map<string, string[]>();
-  const composeTasks = treeRepos.map((repo) => async () => {
-    const files = rootFilesMap.get(repo.name) ?? [];
-    const skills = await fetchComposeSkillsForRepo(
-      username,
-      repo.name,
-      files,
-      token,
-    );
-    return { repo: repo.name, skills };
-  });
-
-  const composeResults = await pLimit(composeTasks, TOKEN_COMPOSE_CONCURRENCY);
-  composeResults.forEach(({ repo, skills }) => {
-    if (skills.length > 0) composeSkillsMap.set(repo, skills);
-  });
+    done = 0;
+    const withTrees = treeRepos.filter((r) => deepRepos.has(r.name));
+    await mapLimit(withTrees, RAW_CONCURRENCY, async (repo) => {
+      const s = signals.get(repo.name)!;
+      const originalPaths = treePaths.get(repo.name) ?? [];
+      const manifestPaths = selectManifestPaths(originalPaths);
+      const composePaths = originalPaths
+        .filter((p) => COMPOSE_FILE.test(p) && p.split('/').length <= 3)
+        .slice(0, 3);
+      const [manifests, compose] = await Promise.all([
+        Promise.all(manifestPaths.map((p) => fetchManifest(owner, repo.name, p))),
+        Promise.all(composePaths.map((p) => fetchCompose(owner, repo.name, p))),
+      ]);
+      s.manifests = manifests.filter((m): m is ParsedManifest => Boolean(m));
+      s.composeFiles = compose.filter((c): c is string => Boolean(c));
+      onProgress?.({ phase: 'manifests', current: ++done, total: withTrees.length });
+    });
+  } else {
+    // No tree without the API — probe the root manifest for the primary language
+    const probeRepos = repos
+      .filter((r) => !r.archived && r.language && ROOT_MANIFESTS_BY_LANGUAGE[r.language])
+      .slice(0, BASIC_MANIFEST_LIMIT);
+    let done = 0;
+    await mapLimit(probeRepos, RAW_CONCURRENCY, async (repo) => {
+      const candidates = ROOT_MANIFESTS_BY_LANGUAGE[repo.language!];
+      const manifests = await Promise.all(
+        candidates.map((p) => fetchManifest(owner, repo.name, p)),
+      );
+      signals.get(repo.name)!.manifests = manifests.filter(
+        (m): m is ParsedManifest => Boolean(m),
+      );
+      onProgress?.({ phase: 'manifests', current: ++done, total: probeRepos.length });
+    });
+  }
 
   onProgress?.({ phase: 'analyzing' });
-  const skillMap = detectSkillsFromRepos(
-    repos,
-    languageMaps,
-    rootFilesMap,
-    composeSkillsMap,
+  const repoInfos = repos.map((repo) =>
+    buildRepoInfo(repo, signals.get(repo.name)!, deepRepos.has(repo.name)),
   );
-  const categories = categorizeSkills(skillMap);
-
-  onProgress?.({ phase: 'done' });
 
   return {
     user,
-    categories,
+    repos: repoInfos,
+    categories: aggregateSkills(repoInfos),
     totalRepos: repos.length,
-    scannedRepos: sortedRepos.length,
+    deepScannedRepos: deepRepos.size,
+    mode: token ? 'deep' : 'basic',
+    warnings,
   };
 }

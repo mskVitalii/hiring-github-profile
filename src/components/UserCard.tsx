@@ -3,10 +3,16 @@ import type { GitHubUser } from '../lib/types';
 interface Props {
   user: GitHubUser;
   totalRepos: number;
-  scannedRepos: number;
+  deepScannedRepos: number;
+  mode: 'basic' | 'deep';
 }
 
-export default function UserCard({ user, totalRepos, scannedRepos }: Props) {
+export default function UserCard({
+  user,
+  totalRepos,
+  deepScannedRepos,
+  mode,
+}: Props) {
   return (
     <div className='flex items-center gap-4 p-4 rounded-lg border border-gh-border bg-gh-bg-secondary max-w-xl mx-auto'>
       <img
@@ -33,7 +39,9 @@ export default function UserCard({ user, totalRepos, scannedRepos }: Props) {
           </p>
         )}
         <p className='text-xs text-gh-text-secondary mt-1'>
-          Scanned {scannedRepos} of {totalRepos} repositories
+          {mode === 'deep'
+            ? `${totalRepos} repositories · ${deepScannedRepos} analysed in depth`
+            : `${totalRepos} repositories · quick scan (add a token for file-level detection)`}
         </p>
       </div>
     </div>

@@ -5,15 +5,15 @@ import {
   type OAuthSession,
   type TokenSource,
 } from '../lib/auth';
-import type { ScanProgress } from '../lib/github';
+import { parseUsername, type ScanProgress } from '../lib/github';
 import { getToken } from '../lib/token';
 import type { ApiErrorResponse, ScanResult } from '../lib/types';
+import Gallery from './Gallery';
 import ProgressBar from './ProgressBar';
 import SearchBar from './SearchBar';
 
 const UserCard = lazy(() => import('./UserCard'));
-const SkillsList = lazy(() => import('./SkillsList'));
-const MarkdownPreview = lazy(() => import('./MarkdownPreview'));
+const ProfileEditor = lazy(() => import('./ProfileEditor'));
 
 type AnalyticsConsent = 'granted' | 'denied' | null;
 
@@ -36,23 +36,6 @@ function getInitialUsernameFromLocation(): string {
   const path = window.location.pathname;
   const relative = path.startsWith(base) ? path.slice(base.length) : path;
   return relative.split('/').filter(Boolean)[0] ?? '';
-}
-
-function parseUsername(input: string): string {
-  const raw = input.trim();
-  if (!raw) return '';
-
-  try {
-    const url = new URL(raw);
-    if (url.hostname.toLowerCase() === 'github.com') {
-      const path = url.pathname.replace(/^\/+|\/+$/g, '');
-      return path.split('/')[0] ?? '';
-    }
-  } catch {
-    // Ignore URL parsing failures and fallback to plain username handling.
-  }
-
-  return raw.replace(/^@/, '').split('/')[0] ?? '';
 }
 
 function sendGaPageView(path: string): void {
@@ -298,7 +281,8 @@ export default function App() {
         trackAnalyticsEvent('scan_completed', {
           has_token: hasToken,
           include_archived: includeArchived,
-          scanned_repos: scanResult.scannedRepos,
+          scanned_repos: scanResult.deepScannedRepos,
+          scan_mode: scanResult.mode,
           token_source: tokenSource,
           total_repos: scanResult.totalRepos,
           skills_detected: skillsDetected,
@@ -437,12 +421,31 @@ export default function App() {
             <UserCard
               user={result.user}
               totalRepos={result.totalRepos}
-              scannedRepos={result.scannedRepos}
+              deepScannedRepos={result.deepScannedRepos}
+              mode={result.mode}
             />
-            <SkillsList categories={result.categories} />
-            <MarkdownPreview result={result} />
+            {result.warnings.map((warning) => (
+              <div
+                key={warning}
+                className='max-w-xl mx-auto px-4 py-3 rounded-lg border border-gh-orange/50 bg-gh-orange/10 text-gh-orange text-sm'
+              >
+                {warning}
+              </div>
+            ))}
+            <ProfileEditor result={result} />
           </Suspense>
         </section>
+      )}
+
+      {!isLoading && (
+        <Gallery
+          disabled={isLoading}
+          onSelect={(login) => {
+            setInitialUsername(login);
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+            void handleSearch(login);
+          }}
+        />
       )}
 
       {/* Footer */}
