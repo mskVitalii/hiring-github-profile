@@ -59,7 +59,7 @@ Copy [.env.example](.env.example) to `.env` locally and fill in the GitHub OAuth
 ## GitHub OAuth
 
 - The app supports `Login with GitHub` via a GitHub OAuth App.
-- Required scope: `read:user repo`
+- Required scope: `read:user` (scans read public data only)
 - The OAuth access token is stored in secure, `httpOnly` cookies.
 - OAuth-backed scans go through `/api/scan`, so the browser never reads the cookie token directly.
 - Manual Personal Access Tokens still work and remain stored in `localStorage` as a fallback for existing users.

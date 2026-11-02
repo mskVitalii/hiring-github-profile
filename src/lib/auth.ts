@@ -1,4 +1,5 @@
-export const OAUTH_SCOPE = 'read:user repo';
+// Scans read public data only; no repo access is needed (or asked for)
+export const OAUTH_SCOPE = 'read:user';
 export const OAUTH_STATE_COOKIE = 'gh_oauth_state';
 export const OAUTH_TOKEN_COOKIE = 'gh_oauth_token';
 export const OAUTH_LOGIN_COOKIE = 'gh_oauth_login';

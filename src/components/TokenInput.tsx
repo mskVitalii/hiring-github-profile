@@ -147,7 +147,7 @@ export function TokenInput({ onTokenChange }: TokenInputProps) {
 
                 <p className='token-hint'>
                   <a
-                    href='https://github.com/settings/tokens/new?scopes=public_repo&description=GitHub%20Skills%20Scanner'
+                    href='https://github.com/settings/tokens/new?description=GitHub%20Skills%20Scanner'
                     target='_blank'
                     rel='noreferrer'
                   >
@@ -155,8 +155,8 @@ export function TokenInput({ onTokenChange }: TokenInputProps) {
                   </a>
                   <br />
                   <small>
-                    Only read:public_repo scope needed. We never store or share
-                    it.
+                    No scopes needed — public data only. Kept in this browser
+                    and never sent to our server.
                   </small>
                 </p>
               </>
