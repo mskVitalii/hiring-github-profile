@@ -9,22 +9,13 @@ export interface GalleryProfile {
 
 export interface GalleryGroup {
   title: string;
+  /** Render as a centered row instead of the grid */
+  centered?: boolean;
   profiles: GalleryProfile[];
 }
 
 /** Curated public profiles to explore. Personal accounts only — no orgs. */
 export const GALLERY: GalleryGroup[] = [
-  {
-    title: 'Made by',
-    profiles: [
-      {
-        login: 'mskVitalii',
-        name: 'Vitalii Popov',
-        tagline: 'Author of this tool',
-        link: { url: 'https://www.linkedin.com/in/mskvitalii/', label: 'LinkedIn' },
-      },
-    ],
-  },
   {
     title: 'Legends',
     profiles: [
@@ -125,6 +116,18 @@ export const GALLERY: GalleryGroup[] = [
     profiles: [
       { login: 'vladilenm', name: 'Vladilen Minin', tagline: 'JavaScript & frontend courses', youtube: { url: 'https://www.youtube.com/@VladilenMinin', subscribers: '311K' } },
       { login: 'Archakov06', name: 'Dennis Archakov', tagline: 'Archakov Blog', youtube: { url: 'https://www.youtube.com/@ArchakovBlog', subscribers: '75.7K' } },
+    ],
+  },
+  {
+    title: 'Made by',
+    centered: true,
+    profiles: [
+      {
+        login: 'mskVitalii',
+        name: 'Vitalii Popov',
+        tagline: 'Author of this tool',
+        link: { url: 'https://www.linkedin.com/in/mskvitalii/', label: 'LinkedIn' },
+      },
     ],
   },
 ];

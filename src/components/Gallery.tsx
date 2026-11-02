@@ -21,10 +21,18 @@ export default function Gallery({ onSelect, disabled = false }: Props) {
 
       {GALLERY.map((group) => (
         <div key={group.title}>
-          <h3 className='text-xs font-semibold text-gh-text-secondary uppercase tracking-wide mb-3'>
+          <h3
+            className={`text-xs font-semibold text-gh-text-secondary uppercase tracking-wide mb-3 ${group.centered ? 'text-center' : ''}`}
+          >
             {group.title}
           </h3>
-          <ul className='grid grid-cols-1 min-[420px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2'>
+          <ul
+            className={
+              group.centered
+                ? 'flex flex-wrap justify-center gap-2 [&>li]:w-full [&>li]:max-w-xs'
+                : 'grid grid-cols-1 min-[420px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2'
+            }
+          >
             {group.profiles.map((p) => (
               <li
                 key={p.login}
