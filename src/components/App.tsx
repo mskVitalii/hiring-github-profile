@@ -5,7 +5,8 @@ import {
   type OAuthSession,
   type TokenSource,
 } from '../lib/auth';
-import { parseUsername, type ScanProgress } from '../lib/github';
+import type { ScanProgress } from '../lib/github';
+import { parseUsername } from '../lib/username';
 import { getToken } from '../lib/token';
 import type { ApiErrorResponse, ScanResult } from '../lib/types';
 import { isGalleryLogin } from '../lib/gallery';

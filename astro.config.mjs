@@ -31,6 +31,16 @@ export default defineConfig({
             project: 'javascript-astro',
             org: 'hiring-github-profile',
             authToken: process.env.SENTRY_AUTH_TOKEN,
+            telemetry: false,
+            sourcemaps: {
+              // Default with the Vercel adapter is {.vercel,dist}/**/*: the
+              // second upload pass re-reads server chunks the adapter copied
+              // into .vercel/output without maps, plus traced node_modules,
+              // producing "no sourcemap found" warnings.
+              assets: ['./dist/**/*'],
+              // Server maps are not public; keep them so every pass finds them
+              filesToDeleteAfterUpload: ['./dist/**/client/**/*.map'],
+            },
           }),
         ]
       : []),
