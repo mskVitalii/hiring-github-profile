@@ -13,19 +13,19 @@
     "astro": "astro"
   },
   "dependencies": {
-    "@astrojs/react": "^5.0.0",
-    "@astrojs/sitemap": "^3.7.1",
-    "@astrojs/vercel": "^10.0.1",
-    "@sentry/astro": "^10.43.0",
-    "@tailwindcss/vite": "^4.2.1",
+    "@astrojs/react": "^7.1.2",
+    "@astrojs/sitemap": "^3.7.4",
+    "@astrojs/vercel": "^11.0.18",
+    "@sentry/astro": "^11.10.0",
+    "@tailwindcss/vite": "^4.3.3",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vercel/analytics": "^2.0.1",
     "@vercel/speed-insights": "^2.0.0",
-    "astro": "^6.0.4",
+    "astro": "^7.4.5",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
-    "tailwindcss": "^4.2.1"
+    "tailwindcss": "^4.3.3"
   },
   "devDependencies": {
     "vitest": "^4.1.0"
