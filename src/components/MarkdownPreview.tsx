@@ -299,22 +299,65 @@ function renderTables(html: string): string {
   return out.join('\n');
 }
 
+/**
+ * Group "- item" lines into <ul>. Indented lines continue the previous item
+ * (a trailing "\\" is a GFM hard break) and blank lines between items keep
+ * the list going, matching how GitHub renders the generated README.
+ */
+function renderLists(html: string): string {
+  const lines = html.split('\n');
+  const out: string[] = [];
+  let items: string[][] | null = null;
+
+  const flush = () => {
+    if (!items) return;
+    const loose = items.some((parts) => parts.length > 1);
+    const lis = items
+      .map(
+        (parts) =>
+          `<li class="ml-5 pl-1 list-disc text-gh-text text-sm leading-relaxed">${parts
+            .map((part, i) => (i === 0 ? part : `<div class="mt-1.5">${part}</div>`))
+            .join('')}</li>`,
+      )
+      .join('');
+    out.push(`<ul class="my-3 ${loose ? 'space-y-4' : 'space-y-1'}">${lis}</ul>`);
+    items = null;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const item = line.match(/^- (.+)$/);
+    if (item) {
+      (items ??= []).push([item[1].replace(/\\$/, '')]);
+    } else if (items && /^ {2,}\S/.test(line)) {
+      items.at(-1)!.push(line.trim().replace(/\\$/, ''));
+    } else if (items && !line.trim() && /^- /.test(lines[i + 1] ?? '')) {
+      // blank line inside a loose list
+    } else {
+      flush();
+      out.push(line);
+    }
+  }
+  flush();
+  return out.join('\n');
+}
+
 function renderGfm(md: string): string {
   let html = escapeHtml(md);
 
-  // Headings (order matters: h3 before h2 before h1)
+  // Headings shift one level down: the page h1 is the profile name
   html = html.replace(/^### (.+)$/gm, (_match, p1) => {
     const id = toAnchor(p1);
-    return `<h3 id="${id}" class="text-base font-semibold text-gh-text mt-6 mb-2 scroll-mt-4">${p1}</h3>`;
+    return `<h4 id="${id}" class="text-base font-semibold text-gh-text mt-6 mb-2 scroll-mt-4">${p1}</h4>`;
   });
   html = html.replace(
     /^## (.+)$/gm,
     (_match, p1) =>
-      `<h2 class="text-lg font-bold text-gh-text mt-8 mb-3 pb-1 border-b border-gh-border">${p1}</h2>`,
+      `<h3 class="text-lg font-bold text-gh-text mt-8 mb-3 pb-1 border-b border-gh-border">${p1}</h3>`,
   );
   html = html.replace(
     /^# (.+)$/gm,
-    '<h1 class="text-2xl font-bold text-gh-text mb-4">$1</h1>',
+    '<h2 class="text-2xl font-bold text-gh-text mb-4">$1</h2>',
   );
 
   // Blockquotes
@@ -360,17 +403,8 @@ function renderGfm(md: string): string {
   // Markdown tables
   html = renderTables(html);
 
-  // List items
-  html = html.replace(
-    /^- (.+)$/gm,
-    '<li class="ml-4 list-disc text-gh-text text-sm leading-relaxed">$1</li>',
-  );
-
-  // Wrap consecutive <li> in <ul>
-  html = html.replace(
-    /((?:<li[^>]*>.*<\/li>\n?)+)/g,
-    '<ul class="my-2 space-y-1">$1</ul>',
-  );
+  // Lists (with indented continuation lines and loose spacing)
+  html = renderLists(html);
 
   // Paragraphs: wrap remaining non-empty, non-tag lines
   html = html.replace(

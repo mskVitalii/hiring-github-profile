@@ -61,8 +61,13 @@ describe('generateMarkdown', () => {
   it('lists each project once with its stack by default', () => {
     const md = generateMarkdown(scan());
     expect(md.match(/\[web\]\(/g)).toHaveLength(1);
-    expect(md).toContain('`TypeScript` `React`');
     expect(md).toContain('## 🚀 Projects');
+  });
+
+  it('keeps the stack inside its project item and spaces projects apart', () => {
+    const md = generateMarkdown(scan());
+    // hard break (trailing backslash) + indented stack = same list item
+    expect(md).toMatch(/\[web\]\([^)]+\)\*\*.*\\\n {2}`TypeScript` `React`\n\n- \*\*\[api\]/);
   });
 
   it('honours hidden skills, custom skills and excluded repos', () => {

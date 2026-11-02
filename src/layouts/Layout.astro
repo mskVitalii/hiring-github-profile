@@ -4,9 +4,12 @@ import '../styles/global.css';
 interface Props {
   title?: string;
   description?: string;
+  /** Extra JSON-LD for the page (e.g. a ProfilePage) */
+  structuredData?: object;
 }
 
 const {
+  structuredData,
   title = 'Hiring GitHub Profile — Developer Skills Scanner',
   description = 'Scan any GitHub profile to extract developer skills and technologies. Perfect for HR and recruiters.',
 } = Astro.props;
@@ -92,6 +95,9 @@ const jsonLd = {
 
     <!-- Structured Data -->
     <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
+    {structuredData && (
+      <script type="application/ld+json" set:html={JSON.stringify(structuredData).replace(/</g, '\\u003c')} />
+    )}
 
     <!-- Google Analytics -->
     {import.meta.env.PUBLIC_GA_ID && (

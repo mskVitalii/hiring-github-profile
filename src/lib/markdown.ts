@@ -215,12 +215,15 @@ class ReadmeBuilder {
     const description = this.description(repo);
     if (s.showDescription && description) line += ` — ${description}`;
 
-    const lines = [line];
-    const stack = withStack && s.showStack ? this.stack(repo) : '';
-    if (stack) lines.push(`  ${stack}`);
-    const topics = s.showTopics ? this.topics(repo) : '';
-    if (topics) lines.push(`  ${topics}`);
-    return lines;
+    const extra = [
+      withStack && s.showStack ? this.stack(repo) : '',
+      s.showTopics ? this.topics(repo) : '',
+    ].filter(Boolean);
+    // A trailing backslash is a GFM hard break: the stack stays inside this
+    // list item, indented under its project instead of floating below it.
+    return [line, ...extra.map((l) => `  ${l}`)].map((l, i, all) =>
+      i < all.length - 1 ? `${l}\\` : l,
+    );
   }
 
   table(repos: RepoInfo[], withStack: boolean): string[] {
@@ -259,7 +262,12 @@ class ReadmeBuilder {
         ? sorted.slice(0, this.settings.projectLimit)
         : sorted;
     if (this.settings.layout === 'table') return this.table(limited, withStack);
-    return limited.flatMap((r) => this.listItem(r, withStack));
+    const items = limited.map((r) => this.listItem(r, withStack));
+    // Blank lines make a loose list, so multi-line projects get breathing room
+    const loose = items.some((item) => item.length > 1);
+    return items.flatMap((item, i) =>
+      loose && i < items.length - 1 ? [...item, ''] : item,
+    );
   }
 }
 

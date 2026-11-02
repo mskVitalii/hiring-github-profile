@@ -35,6 +35,15 @@ Build and install on Vercel use **bun** (`vercel.json` specifies `bun run build`
 
 GitHub API responses and parsed manifests are cached in `localStorage` for 1 hour (`gh2_` prefix).
 
+### Gallery profiles (pre-scanned, CDN-cached)
+
+Profiles listed in `src/lib/gallery.ts` are scanned on the server by `getProfileScan()` (`src/lib/profileCache.ts`, top 100 repos, deep mode when `GITHUB_TOKEN` is set) and cached with `Cache-Control: s-maxage=86400, stale-while-revalidate=604800` (fresh for a day, served stale up to a week while revalidating), plus an in-memory cache per instance.
+
+- `/:username` for a gallery login server-renders the finished result (`<App initialResult>`), with SEO title/description from top skills and `ProfilePage` JSON-LD
+- `/api/profile/:login` returns the same JSON for in-app navigation; non-gallery logins get 404 so the server token can't be spent on arbitrary users
+- Gallery URLs are added to the sitemap in `astro.config.mjs`
+- YouTube subscriber counts in `gallery.ts` are a manual snapshot (date in the comment)
+
 ### Auth modes
 
 | Mode | Token source | Scan execution |
@@ -60,6 +69,8 @@ Profiles are addressable via path (`/:username`) or query param (`?u=username`).
 | `src/components/ProjectPicker.tsx` | Include/exclude repos |
 | `src/components/MarkdownPreview.tsx` | Preview/raw markdown, copy, post-copy popup, safe GFM renderer |
 | `src/components/Gallery.tsx` | Famous developers grid (data in `src/lib/gallery.ts`) |
+| `src/lib/profileCache.ts` | Server-side cached scans for gallery profiles |
+| `src/pages/api/profile/[login].ts` | CDN-cached JSON scan for gallery profiles |
 | `src/components/SearchBar.tsx`, `TokenInput.tsx`, `GitHubLoginButton.tsx` | Username input, PAT and OAuth controls |
 | `src/lib/catalog/` | **Single source of truth for techs**: category, ecosystem languages, linguist names, topics, keywords, deps, file patterns, compose regex, implications, badge |
 | `src/lib/detect.ts` | Pure detection + aggregation + repo ranking |
@@ -90,6 +101,7 @@ Add a test case in `src/lib/detect.test.ts` for anything with a false-positive r
 |---|---|---|
 | `GITHUB_CLIENT_ID` | `src/pages/api/auth/login.ts`, `callback.ts` | GitHub OAuth App client ID |
 | `GITHUB_CLIENT_SECRET` | `src/pages/api/auth/callback.ts` | GitHub OAuth App client secret (server-only) |
+| `GITHUB_TOKEN` | `src/lib/profileCache.ts`, `src/pages/[username].astro` | Optional server token: deep scans for gallery profiles, higher rate limit for profile metadata |
 | `PUBLIC_SENTRY_DSN` | `sentry.client.config.js` | Sentry DSN (browser-accessible) |
 | `ENABLE_SENTRY` | `astro.config.mjs` | Gates `@sentry/astro` integration at build time (`true`/`false`) |
 | `SENTRY_AUTH_TOKEN` | `astro.config.mjs` | Sentry source map upload (build-time only, never goes to browser) |

@@ -5,19 +5,26 @@ import vercel from '@astrojs/vercel';
 import sentry from '@sentry/astro';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'astro/config';
+import { GALLERY } from './src/lib/gallery.ts';
+
+const site = 'https://hiring-github-profile.vercel.app';
+// Gallery profiles are server-rendered on demand, so list them explicitly
+const galleryPages = GALLERY.flatMap((group) =>
+  group.profiles.map((profile) => `${site}/${profile.login}`),
+);
 
 const enableSentry = process.env.ENABLE_SENTRY === 'true';
 
 // https://astro.build/config
 export default defineConfig({
-  site: 'https://hiring-github-profile.vercel.app',
+  site,
   base: '/',
   output: 'server',
   adapter: vercel(),
 
   integrations: [
     react(),
-    sitemap(),
+    sitemap({ customPages: galleryPages }),
     ...(enableSentry
       ? [
           sentry({

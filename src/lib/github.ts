@@ -258,7 +258,11 @@ export async function scanUser(
   username: string,
   token?: string,
   onProgress?: (progress: ScanProgress) => void,
-  options?: { includeArchived?: boolean },
+  options?: {
+    includeArchived?: boolean;
+    /** Keep only the top-ranked repos in the result (keeps cached payloads small) */
+    maxRepos?: number;
+  },
 ): Promise<ScanResult> {
   const includeArchived = options?.includeArchived ?? true;
   const warnings: string[] = [];
@@ -268,7 +272,8 @@ export async function scanUser(
   const owner = user.login;
 
   onProgress?.({ phase: 'repos' });
-  const repos = rankRepos(await fetchRepos(owner, includeArchived, token));
+  const allRepos = await fetchRepos(owner, includeArchived, token);
+  const repos = rankRepos(allRepos).slice(0, options?.maxRepos ?? Infinity);
   const signals = new Map<string, RepoSignals>(
     repos.map((r) => [r.name, {}]),
   );
@@ -363,7 +368,7 @@ export async function scanUser(
     user,
     repos: repoInfos,
     categories: aggregateSkills(repoInfos),
-    totalRepos: repos.length,
+    totalRepos: allRepos.length,
     deepScannedRepos: deepRepos.size,
     mode: token ? 'deep' : 'basic',
     warnings,

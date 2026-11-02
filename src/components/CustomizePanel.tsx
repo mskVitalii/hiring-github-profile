@@ -15,6 +15,7 @@ interface Props {
 
 const inputClass =
   'h-7 rounded border border-gh-border bg-gh-bg px-2 text-xs text-gh-text focus:outline-none focus:ring-1 focus:ring-gh-accent';
+const selectClass = `${inputClass} gh-select`;
 const checkboxClass =
   'h-4 w-4 rounded border-gh-border bg-gh-bg text-gh-accent focus:ring-gh-accent';
 
@@ -70,7 +71,7 @@ export default function CustomizePanel({
           const picked = options.find(([v]) => String(v) === e.target.value);
           if (picked) set(key, picked[0]);
         }}
-        className={inputClass}
+        className={selectClass}
       >
         {options.map(([value, text]) => (
           <option key={String(value)} value={String(value)}>
@@ -205,7 +206,7 @@ export default function CustomizePanel({
             value={newCategory}
             onChange={(e) => setNewCategory(e.target.value as CategoryId | '')}
             aria-label='Skill category'
-            className={inputClass}
+            className={selectClass}
           >
             <option value=''>Auto category</option>
             {CATEGORIES.map((c) => (

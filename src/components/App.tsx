@@ -8,6 +8,7 @@ import {
 import { parseUsername, type ScanProgress } from '../lib/github';
 import { getToken } from '../lib/token';
 import type { ApiErrorResponse, ScanResult } from '../lib/types';
+import { isGalleryLogin } from '../lib/gallery';
 import Gallery from './Gallery';
 import ProgressBar from './ProgressBar';
 import SearchBar from './SearchBar';
@@ -160,11 +161,25 @@ async function scanWithOAuthSession(
   return (await response.json()) as ScanResult;
 }
 
-export default function App() {
+async function fetchGalleryScan(username: string): Promise<ScanResult> {
+  const response = await fetch(`/api/profile/${encodeURIComponent(username)}`);
+  if (!response.ok) {
+    const data = (await response.json().catch(() => null)) as ApiErrorResponse | null;
+    throw new Error(data?.error || 'Failed to load profile');
+  }
+  return (await response.json()) as ScanResult;
+}
+
+interface AppProps {
+  /** Pre-scanned profile rendered on the server (gallery profiles) */
+  initialResult?: ScanResult | null;
+}
+
+export default function App({ initialResult = null }: AppProps) {
   const [isHydrated, setIsHydrated] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [progress, setProgress] = useState<ScanProgress | null>(null);
-  const [result, setResult] = useState<ScanResult | null>(null);
+  const [result, setResult] = useState<ScanResult | null>(initialResult);
   const [error, setError] = useState<string | null>(null);
   const [includeArchived, setIncludeArchived] = useState(true);
   const [token, setToken] = useState<string | null>(null);
@@ -172,7 +187,7 @@ export default function App() {
     useState<OAuthSession>(EMPTY_OAUTH_SESSION);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [initialUsername, setInitialUsername] = useState('');
-  const [hasAutoScanned, setHasAutoScanned] = useState(false);
+  const [hasAutoScanned, setHasAutoScanned] = useState(Boolean(initialResult));
   const [consent, setConsent] = useState<AnalyticsConsent>(null);
   const [shareStatus, setShareStatus] = useState<'idle' | 'copied' | 'shared'>(
     'idle',
@@ -258,7 +273,11 @@ export default function App() {
       try {
         let scanResult: ScanResult;
 
-        if (token) {
+        if (isGalleryLogin(username)) {
+          // Curated profiles are pre-scanned and cached on the CDN
+          setProgress({ phase: 'repos' });
+          scanResult = await fetchGalleryScan(username);
+        } else if (token) {
           const { scanUser } = await import('../lib/github');
           scanResult = await scanUser(username, token, setProgress, {
             includeArchived,
@@ -364,13 +383,16 @@ export default function App() {
     }
   }, []);
 
+  const AppTitle = result ? 'p' : 'h1';
+
   return (
     <main className='min-h-screen flex flex-col'>
       {/* Header */}
       <header className='py-12 px-4 text-center'>
-        <h1 className='text-3xl sm:text-4xl font-bold text-gh-text mb-2'>
+        {/* On a profile page the person's name is the h1 (in UserCard) */}
+        <AppTitle className='text-3xl sm:text-4xl font-bold text-gh-text mb-2'>
           <span className='text-gh-accent'>GitHub</span> Skills Scanner
-        </h1>
+        </AppTitle>
         <p className='text-gh-text-secondary max-w-md mx-auto'>
           Enter a GitHub username or profile URL to extract developer skills and
           technologies.
@@ -441,6 +463,8 @@ export default function App() {
         <Gallery
           disabled={isLoading}
           onSelect={(login) => {
+            // Mark as scanned first, or the auto-scan effect fires a second scan
+            setHasAutoScanned(true);
             setInitialUsername(login);
             window.scrollTo({ top: 0, behavior: 'smooth' });
             void handleSearch(login);
@@ -450,17 +474,6 @@ export default function App() {
 
       {/* Footer */}
       <footer className='mt-auto py-6 text-center text-sm text-gh-text/85 space-y-1'>
-        <p>
-          Made by{' '}
-          <a
-            href='https://www.linkedin.com/in/mskvitalii/'
-            target='_blank'
-            rel='noopener noreferrer'
-            className='text-gh-accent underline underline-offset-2 decoration-1 hover:decoration-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gh-accent/70 rounded-sm'
-          >
-            Vitalii Popov
-          </a>
-        </p>
         <p>
           Data from{' '}
           <a

@@ -22,14 +22,16 @@ export default function UserCard({
         loading='lazy'
       />
       <div className='flex-1 min-w-0'>
-        <a
-          href={user.html_url}
-          target='_blank'
-          rel='noopener noreferrer'
-          className='text-gh-accent font-semibold text-lg hover:underline'
-        >
-          {user.name ?? user.login}
-        </a>
+        <h1 className='text-lg font-semibold leading-tight'>
+          <a
+            href={user.html_url}
+            target='_blank'
+            rel='noopener noreferrer'
+            className='text-gh-accent font-semibold text-lg hover:underline'
+          >
+            {user.name ?? user.login}
+          </a>
+        </h1>
         {user.name && (
           <p className='text-sm text-gh-text-secondary'>@{user.login}</p>
         )}

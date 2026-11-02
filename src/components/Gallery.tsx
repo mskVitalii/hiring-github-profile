@@ -17,9 +17,6 @@ export default function Gallery({ onSelect, disabled = false }: Props) {
         <h2 id='gallery-heading' className='text-xl font-semibold text-gh-text'>
           Explore famous developers
         </h2>
-        <p className='text-sm text-gh-text-secondary mt-1'>
-          See what their public repositories say about their stack.
-        </p>
       </div>
 
       {GALLERY.map((group) => (
@@ -29,7 +26,10 @@ export default function Gallery({ onSelect, disabled = false }: Props) {
           </h3>
           <ul className='grid grid-cols-1 min-[420px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2'>
             {group.profiles.map((p) => (
-              <li key={p.login}>
+              <li
+                key={p.login}
+                className='flex flex-col rounded-lg border border-gh-border bg-gh-bg-secondary hover:border-gh-accent transition-colors'
+              >
                 <a
                   href={`${base}${p.login}`.replace(/\/+/g, '/')}
                   onClick={(e) => {
@@ -41,7 +41,7 @@ export default function Gallery({ onSelect, disabled = false }: Props) {
                     if (!disabled) onSelect(p.login);
                   }}
                   aria-disabled={disabled}
-                  className='flex items-center gap-3 p-2.5 rounded-lg border border-gh-border bg-gh-bg-secondary hover:border-gh-accent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gh-accent/70'
+                  className='flex flex-1 items-center gap-3 p-2.5 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gh-accent/70'
                 >
                   <img
                     src={galleryAvatar(p.login)}
@@ -60,6 +60,31 @@ export default function Gallery({ onSelect, disabled = false }: Props) {
                     </span>
                   </span>
                 </a>
+                {(p.youtube || p.link) && (
+                  <div className='flex flex-wrap gap-x-3 px-2.5 pb-2 -mt-1 pl-[3.875rem] text-xs'>
+                    {p.youtube && (
+                      <a
+                        href={p.youtube.url}
+                        target='_blank'
+                        rel='noopener noreferrer'
+                        className='text-gh-text-secondary hover:text-gh-red'
+                        aria-label={`${p.name} on YouTube, ${p.youtube.subscribers} subscribers`}
+                      >
+                        ▶ YouTube · {p.youtube.subscribers}
+                      </a>
+                    )}
+                    {p.link && (
+                      <a
+                        href={p.link.url}
+                        target='_blank'
+                        rel='noopener noreferrer'
+                        className='text-gh-text-secondary hover:text-gh-accent'
+                      >
+                        {p.link.label} ↗
+                      </a>
+                    )}
+                  </div>
+                )}
               </li>
             ))}
           </ul>
